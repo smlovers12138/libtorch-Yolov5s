@@ -34,6 +34,8 @@ int libTorchYolov5::torch_init(DeviceType u_device, string modelpath, string cla
 	{
 		netModel = jit::load(modelpath);
 		netModel.to(u_device);
+        //netModel.to(torch::kHalf);
+        netModel.eval();
 		Mat temp_img = cv::Mat::zeros(640, 640, CV_32FC3);
 		temp_img.convertTo(temp_img, CV_32FC3, 1.0f / 255.0f);
 		auto imgTensor = torch::from_blob(temp_img.data, { 1, temp_img.rows, temp_img.cols,temp_img.channels() }).to(u_device);
@@ -55,24 +57,42 @@ int libTorchYolov5::torch_init(DeviceType u_device, string modelpath, string cla
 int libTorchYolov5::torch_detect(DeviceType u_device,jit::script::Module& netModel, Mat& InputImage, Size& InputSize, vector<Rect>& bboxes, vector<float>& confidence, vector<int>& classId)
 {
 	Mat Image, blob_image;
-    Image = InputImage.clone();
-	int image_height = Image.rows;
-	int image_width = Image.cols;
-    std::vector<float> pad_info = LetterboxImage(Image, blob_image, cv::Size(640, 640));
+    //Image = InputImage.clone();
+	//int image_height = Image.rows;
+	//int image_width = Image.cols;
+    auto start = std::chrono::high_resolution_clock::now();
+    std::vector<float> pad_info = LetterboxImage(InputImage, blob_image, cv::Size(640, 640));
     const int pad_w = pad_info[0];
     const int pad_h = pad_info[1];
     const float scale = pad_info[2];
 
     cv::cvtColor(blob_image, blob_image, cv::COLOR_BGR2RGB);
     blob_image.convertTo(blob_image, CV_32FC3, 1.0f / 255.0f);
+    
     auto imgTensor = torch::from_blob(blob_image.data, { 1, blob_image.rows, blob_image.cols,blob_image.channels() }).to(u_device);
-    imgTensor = imgTensor.permute({ 0, 3, 1, 2 }).contiguous();  // BHWC -> BCHW (Batch, Channel, Height, Width)
+    imgTensor = imgTensor.permute({ 0, 3, 1, 2 }).contiguous();  // BHWC -> BCHW (Batch, Channel, Height, Width) 
+    auto end = std::chrono::high_resolution_clock::now();
+    float total_pre = std::chrono::duration<float, std::milli>(end - start).count();
+    std::cout << "Pre takes : " << total_pre << " ms" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
     std::vector<torch::jit::IValue> inputs;
     inputs.emplace_back(imgTensor);
     torch::jit::IValue output = netModel.forward(inputs);
     auto preds = output.toTuple()->elements()[0].toTensor();
+    end = std::chrono::high_resolution_clock::now();
+    total_pre = std::chrono::duration<float, std::milli>(end - start).count();
+
+    std::cout << "Forward takes : " << total_pre << " ms" << std::endl;
+
+    //std::vector<std::vector<Detection>>Result_D;
+    start = std::chrono::high_resolution_clock::now();
     std::vector<std::vector<Detection>>Result_D = PostProcessing(preds, pad_w, pad_h, scale, 0.5, 0.5);
-    if (!Result_D.empty()) {
+    end = std::chrono::high_resolution_clock::now();
+    total_pre = std::chrono::duration<float, std::milli>(end - start).count();
+    std::cout << "PostProcessing takes : " << total_pre << " ms" << std::endl;
+    if (!Result_D.empty()) 
+    {
         for (const auto& detection : Result_D[0]) 
         {
             const auto& box = detection.b_box;
@@ -153,18 +173,26 @@ std::vector<std::vector<Detection>> libTorchYolov5:: PostProcessing(const torch:
     std::vector<std::vector<Detection>> output;
     output.reserve(batch_size);
 
+    
     // iterating all images in the batch
     for (int batch_i = 0; batch_i < batch_size; batch_i++) {
         // apply constrains to get filtered detections for current image
+       
+        auto start = std::chrono::high_resolution_clock::now();
+        
         auto det = torch::masked_select(detections[batch_i], conf_mask[batch_i]).view({ -1, num_classes + item_attr_size });
 
+        auto end = std::chrono::high_resolution_clock::now();
+        float total_pre = std::chrono::duration<float, std::milli>(end - start).count();
+        std::cout << "masked_select takes : " << total_pre << " ms" << std::endl;
         // if none detections remain then skip and start to process next image
         if (0 == det.size(0)) {
             continue;
         }
-
-        // compute overall score = obj_conf * cls_conf, similar to x[:, 5:] *= x[:, 4:5]
+       
+        //compute overall score = obj_conf * cls_conf, similar to x[:, 5:] *= x[:, 4:5]
         det.slice(1, item_attr_size, item_attr_size + num_classes) *= det.select(1, 4).unsqueeze(1);
+
 
         // box (center x, center y, width, height) to (x1, y1, x2, y2)
         torch::Tensor box = xywh2xyxy(det.slice(1, 0, 4));
@@ -191,20 +219,22 @@ std::vector<std::vector<Detection>> libTorchYolov5:: PostProcessing(const torch:
         std::vector<cv::Rect> offset_box_vec;
         std::vector<float> score_vec;
 
+
+
         // copy data back to cpu
         auto offset_boxes_cpu = offset_box.cpu();
         auto det_cpu = det.cpu();
         const auto& det_cpu_array = det_cpu.accessor<float, 2>();
 
+        
         // use accessor to access tensor elements efficiently
         Tensor2Detection(offset_boxes_cpu.accessor<float, 2>(), det_cpu_array, offset_box_vec, score_vec);
-
-        // run NMS
         std::vector<int> nms_indices;
         cv::dnn::NMSBoxes(offset_box_vec, score_vec, conf_thres, iou_thres, nms_indices);
-
+        
         std::vector<Detection> det_vec;
-        for (int index : nms_indices) {
+        for (int index : nms_indices)
+        {
             Detection t;
             const auto& b = det_cpu_array[index];
             t.b_box =
@@ -213,9 +243,11 @@ std::vector<std::vector<Detection>> libTorchYolov5:: PostProcessing(const torch:
             t.score = det_cpu_array[index][Det::score];
             t.class_idx = det_cpu_array[index][Det::class_idx];
             det_vec.emplace_back(t);
-        }
+        }      
+       
         output.emplace_back(det_vec);
-    } // end of batch iterating
-
+       
+    }
+    
     return output;
 }

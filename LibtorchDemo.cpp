@@ -21,14 +21,15 @@ int main()
         cv::Mat Image, blob_image;
         cv::Size InputSize(640, 640);
         int input_imageh, input_imagew, inputn;
-        Image = cv::imread("Test.bmp");
+        Image = cv::imread("Type(1)_ 0.bmp");
         auto start = std::chrono::high_resolution_clock::now();
-        yolov5detector->torch_detect(device_type, net, Image,InputSize, boxes, confidences, classIds);
+        yolov5detector->torch_detect(device_type, net, Image,InputSize, boxes, confidences, classIds);      
         auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        std::cout << "takes : " << duration.count() << " ms" << std::endl;
-
-        if (!boxes.empty()) {
+        float total_pre = std::chrono::duration<float, std::milli>(end - start).count();
+        std::cout << "ALL takes : " << total_pre << " ms" << std::endl;
+        std::cout << "\n" << std::endl;
+        if (!boxes.empty()) 
+        {
             for (int i = 0; i < boxes.size(); i++)
             {
 
@@ -37,16 +38,20 @@ int main()
                 if (1) 
                 {
                     std::string s = class_names[classIds[i]];
+                    std::stringstream ss;
+                    ss << (int)(confidences[classIds[i]]*100);
+                    
+                    s = s +"-"+ ss.str();
                     auto font_face = cv::FONT_HERSHEY_DUPLEX;
                     auto font_scale = 1.0;
                     int thickness = 1;
                     int baseline = 0;
                     auto s_size = cv::getTextSize(s, font_face, font_scale, thickness, &baseline);
-                    cv::rectangle(Image,
+                   /* cv::rectangle(Image,
                         cv::Point(boxes[i].tl().x, boxes[i].tl().y - s_size.height - 5),
                         cv::Point(boxes[i].tl().x + s_size.width, boxes[i].tl().y),
-                        cv::Scalar(0, 0, 255), -1);
-                    cv::putText(Image, s, cv::Point(boxes[i].tl().x, boxes[i].tl().y - 5),
+                        cv::Scalar(0, 0, 255), -1);*/
+                    cv::putText(Image, ss.str(), cv::Point(boxes[i].tl().x, boxes[i].tl().y - 5),
                         font_face, font_scale, cv::Scalar(255, 255, 0), thickness);
                 }
             }
@@ -70,11 +75,11 @@ int main()
         //            cv::Point(left, top),
         //            cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 0), 2);
         //    }
-        //}
-        // cv::putText(frame, "FPS: " + std::to_string(int(1e7 / (clock() - start))),
-        //     cv::Point(50, 50),
-        //     cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
-        std::cout << "\n" << std::endl;
+        //}        
+       
+         cv::putText(Image,  std::to_string(int(1e3 / total_pre))+" Frame per Second",
+             cv::Point(50, 50),
+             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255, 255, 0), 2);
         cv::namedWindow("",0);
         cv::imshow("", Image);
         if (cv::waitKey(100) == 27)
